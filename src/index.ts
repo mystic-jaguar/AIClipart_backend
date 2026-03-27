@@ -5,7 +5,7 @@ import rateLimit from 'express-rate-limit';
 import { generateRoute } from './routes/generate';
 
 const app = express();
-const PORT = process.env.PORT ?? 3000;
+const PORT = process.env.PORT ?? 8080;
 
 // CORS — restrict to your app's origin in production
 app.use(cors({ origin: process.env.ALLOWED_ORIGINS ?? '*' }));
