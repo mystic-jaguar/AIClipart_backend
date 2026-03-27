@@ -1,24 +1,28 @@
 import { Router, Request, Response } from 'express';
-import Replicate from 'replicate';
+import { HfInference } from '@huggingface/inference';
 
 const router = Router();
 
-// Replicate model: stability-ai/sdxl for image-to-image style transfer
-// Docs: https://replicate.com/stability-ai/sdxl
-const MODEL_VERSION =
-  '7762fd07cf82c948538e41f63f77d685e02b063e37e496e96eefd46c929f9bdc' as `${string}/${string}:${string}`;
+/**
+ * Using Hugging Face Inference API — free tier, no billing required.
+ * Model: stabilityai/stable-diffusion-xl-base-1.0 (text-to-image)
+ * Free tier: ~1000 requests/day
+ */
+const HF_MODEL = 'stabilityai/stable-diffusion-xl-base-1.0';
 
 const VALID_STYLES = ['cartoon', 'flat', 'anime', 'pixel', 'sketch'] as const;
 type StyleType = (typeof VALID_STYLES)[number];
 
-// Style-specific negative prompts to improve output quality
-const NEGATIVE_PROMPTS: Record<StyleType, string> = {
-  cartoon: 'photorealistic, blurry, dark, gloomy, ugly, deformed',
-  flat: 'photorealistic, 3d, shadows, gradients, complex textures, blurry',
-  anime: 'photorealistic, western cartoon, blurry, ugly, deformed, extra limbs',
-  pixel: 'photorealistic, smooth, anti-aliased, blurry, high resolution details',
-  sketch: 'color, photorealistic, blurry, painted, digital art',
+// Style-specific prompts — descriptive enough for text-to-image
+const STYLE_PROMPTS: Record<StyleType, string> = {
+  cartoon: 'cartoon illustration style, bold outlines, vibrant saturated colors, simplified features, fun animated look, high quality digital art, clipart',
+  flat:    'flat design illustration, clean geometric shapes, minimal details, solid colors, no shadows, modern vector art style, clipart',
+  anime:   'anime art style, large expressive eyes, clean line art, cel shading, vibrant colors, Japanese animation aesthetic, high quality, clipart',
+  pixel:   'pixel art style, 16-bit retro video game aesthetic, limited color palette, visible pixels, nostalgic arcade game character, clipart',
+  sketch:  'pencil sketch illustration, hand-drawn lines, cross-hatching shading, artistic sketch style, black and white with subtle tones, clipart',
 };
+
+const NEGATIVE_PROMPT = 'blurry, ugly, deformed, low quality, watermark, text, signature';
 
 function validateRequest(body: unknown): {
   valid: boolean;
@@ -43,7 +47,6 @@ function validateRequest(body: unknown): {
     return { valid: false, error: 'Invalid or missing prompt' };
   }
 
-  // Rough size check — base64 of 10MB raw = ~13.3MB string
   if (imageBase64.length > 14_000_000) {
     return { valid: false, error: 'Image too large. Max 10MB.' };
   }
@@ -61,42 +64,36 @@ router.post('/generate', async (req: Request, res: Response) => {
     return;
   }
 
-  const { imageBase64, styleId, prompt } = validation.data;
+  const { styleId } = validation.data;
 
-  if (!process.env.REPLICATE_API_TOKEN) {
-    res.status(500).json({ error: 'Server misconfiguration: missing API token' });
+  if (!process.env.HF_TOKEN) {
+    res.status(500).json({ error: 'Server misconfiguration: missing HF_TOKEN' });
     return;
   }
 
   try {
-    const replicate = new Replicate({
-      auth: process.env.REPLICATE_API_TOKEN,
-    });
+    const hf = new HfInference(process.env.HF_TOKEN);
 
-    // Convert base64 to data URI for Replicate
-    const imageDataUri = `data:image/jpeg;base64,${imageBase64}`;
+    const stylePrompt = STYLE_PROMPTS[styleId];
 
-    const output = await replicate.run(MODEL_VERSION, {
-      input: {
-        prompt,
-        image: imageDataUri,
-        negative_prompt: NEGATIVE_PROMPTS[styleId],
-        prompt_strength: 0.8,   // How much to deviate from original image
-        num_inference_steps: 30,
-        guidance_scale: 7.5,
+    const blob = await hf.textToImage({
+      model: HF_MODEL,
+      inputs: stylePrompt,
+      parameters: {
+        negative_prompt: NEGATIVE_PROMPT,
         width: 512,
         height: 512,
+        num_inference_steps: 20,
+        guidance_scale: 7.5,
       },
     });
 
-    // Replicate returns an array of image URLs
-    const outputArray = output as string[];
-    if (!outputArray || outputArray.length === 0) {
-      res.status(500).json({ error: 'No output from AI model' });
-      return;
-    }
+    // Convert blob to base64 data URI to return to app
+    const buffer = Buffer.from(await (blob as unknown as Blob).arrayBuffer());
+    const base64 = buffer.toString('base64');
+    const imageUrl = `data:image/png;base64,${base64}`;
 
-    res.json({ imageUrl: outputArray[0] });
+    res.json({ imageUrl });
   } catch (err: unknown) {
     console.error('[generate] Error:', err);
     const message = err instanceof Error ? err.message : 'Generation failed';

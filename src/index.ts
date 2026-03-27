@@ -7,6 +7,9 @@ import { generateRoute } from './routes/generate';
 const app = express();
 const PORT = process.env.PORT ?? 8080;
 
+// Fix trust proxy for cloudflare/ngrok tunnels
+app.set('trust proxy', 1);
+
 // CORS — restrict to your app's origin in production
 app.use(cors({ origin: process.env.ALLOWED_ORIGINS ?? '*' }));
 
